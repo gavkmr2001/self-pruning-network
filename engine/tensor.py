@@ -140,6 +140,83 @@ class Tensor:
     def __rtruediv__(self, other) -> "Tensor":
         return as_tensor(other) / self
 
+    # ---------------------------------------------------------------- matmul
+    def __matmul__(self, other) -> "Tensor":
+        """C = A @ B.  dL/dA = G @ B^T,  dL/dB = A^T @ G.
+
+        Leading (batch) dimensions follow NumPy broadcasting; ``backward`` then
+        sums the gradient over any batch axes a parent was broadcast along.
+        """
+        other = as_tensor(other)
+        a, b = self.data, other.data
+        if a.ndim < 2 or b.ndim < 2:
+            raise ValueError("matmul expects tensors with ndim >= 2; reshape vectors explicitly")
+
+        def backward_fn(g):
+            return g @ np.swapaxes(b, -1, -2), np.swapaxes(a, -1, -2) @ g
+
+        return Tensor._make(a @ b, (self, other), backward_fn, "matmul")
+
+    def __rmatmul__(self, other) -> "Tensor":
+        return as_tensor(other) @ self
+
+    # ------------------------------------------------------------ reductions
+    def sum(self, axis=None, keepdims: bool = False) -> "Tensor":
+        """Every input element contributes once to its output slot, so the
+        gradient is the output gradient copied (broadcast) back to the input."""
+        shape = self.shape
+
+        def backward_fn(g):
+            if axis is not None and not keepdims:
+                g = np.expand_dims(g, axis)  # restore the reduced axes as size 1
+            return (np.broadcast_to(g, shape),)
+
+        return Tensor._make(self.data.sum(axis=axis, keepdims=keepdims), (self,), backward_fn, "sum")
+
+    def mean(self, axis=None, keepdims: bool = False) -> "Tensor":
+        count = self.size if axis is None else int(np.prod([self.shape[i] for i in np.atleast_1d(axis)]))
+        return self.sum(axis=axis, keepdims=keepdims) * (1.0 / count)
+
+    # -------------------------------------------------------- shape handling
+    def reshape(self, *shape) -> "Tensor":
+        old = self.shape
+        return Tensor._make(self.data.reshape(*shape), (self,), lambda g: (g.reshape(old),), "reshape")
+
+    def transpose(self, *axes) -> "Tensor":
+        axes = axes or tuple(reversed(range(self.ndim)))
+        inverse = tuple(np.argsort(axes))
+        return Tensor._make(self.data.transpose(axes), (self,), lambda g: (g.transpose(inverse),), "transpose")
+
+    @property
+    def T(self) -> "Tensor":
+        return self.transpose()
+
+    # ---------------------------------------------------------- unary maths
+    def exp(self) -> "Tensor":
+        out = np.exp(self.data)
+        return Tensor._make(out, (self,), lambda g: (g * out,), "exp")
+
+    def log(self) -> "Tensor":
+        a = self.data
+        return Tensor._make(np.log(a), (self,), lambda g: (g / a,), "log")
+
+    # ------------------------------------------------------ non-linearities
+    def relu(self) -> "Tensor":
+        # Subgradient convention: d relu(x)/dx at x == 0 is taken to be 0.
+        positive = self.data > 0
+        return Tensor._make(self.data * positive, (self,), lambda g: (g * positive,), "relu")
+
+    def tanh(self) -> "Tensor":
+        out = np.tanh(self.data)
+        return Tensor._make(out, (self,), lambda g: (g * (1.0 - out * out),), "tanh")
+
+    def sigmoid(self) -> "Tensor":
+        # Branch-free stable form: never calls exp() on a large positive number.
+        x = self.data
+        e = np.exp(-np.abs(x))
+        out = np.where(x >= 0, 1.0 / (1.0 + e), e / (1.0 + e))
+        return Tensor._make(out, (self,), lambda g: (g * out * (1.0 - out),), "sigmoid")
+
     # ------------------------------------------------------------- backward
     def _topological_order(self) -> list["Tensor"]:
         """Parents-before-children ordering, computed iteratively (no recursion)."""
