@@ -1,0 +1,17 @@
+[project]
+name = "aqua-self-pruning"
+version = "0.1.0"
+description = "A from-scratch NumPy autodiff engine and an MLP that prunes itself during training."
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "scikit-learn>=1.2",   # ONLY used to load a standard dataset (no models, no training, no gradients)
+    "matplotlib>=3.7",
+]
+
+[dependency-groups]
+dev = ["pytest>=7.4"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
