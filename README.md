@@ -29,7 +29,23 @@ uv sync                      # or: pip install -r requirements.txt
 ## Commands
 
 ```bash
-uv run pytest -v             # gradient checks + masking tests
+uv run pytest -v                    # gradient checks + masking tests
+uv run python -m scripts.train_dense  # Part 2: dense MLP + Adam on digits (~10 s)
 ```
+
+## Part 2 — dense baseline
+
+`digits` (1,797 8×8 images, 10 classes; loaded with `sklearn.datasets.load_digits`,
+the only use of scikit-learn), stratified 60/20/20 train/val/test split, features
+standardised with training-set statistics. MLP 64-128-128-10 (ReLU, He init for
+hidden layers, Xavier for the logit layer), Adam lr 1e-3, batch 64, 40 epochs, seed 0.
+
+| | value |
+|---|---|
+| test accuracy | 0.9861 |
+| final val accuracy | 0.9583 |
+| prunable weights | 25,856 |
+
+Learning curve and raw per-epoch numbers: `results/part2_dense/`.
 
 

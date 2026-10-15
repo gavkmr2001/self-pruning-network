@@ -17,9 +17,23 @@ Design
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 import numpy as np
 
 DTYPE = np.float64
+_GRAD_ENABLED = True
+
+
+@contextmanager
+def no_grad():
+    """Inside this block ops record no graph (inference / evaluation)."""
+    global _GRAD_ENABLED
+    previous, _GRAD_ENABLED = _GRAD_ENABLED, False
+    try:
+        yield
+    finally:
+        _GRAD_ENABLED = previous
 
 
 def _unbroadcast(grad: np.ndarray, shape: tuple) -> np.ndarray:
@@ -92,7 +106,7 @@ class Tensor:
     @staticmethod
     def _make(data, parents: tuple, backward_fn, op: str) -> "Tensor":
         """Create an op output; only record the graph if some parent needs grads."""
-        needs_grad = any(p.requires_grad for p in parents)
+        needs_grad = _GRAD_ENABLED and any(p.requires_grad for p in parents)
         out = Tensor(data, requires_grad=needs_grad, _parents=parents if needs_grad else (), _op=op)
         if needs_grad:
             out._backward_fn = backward_fn
