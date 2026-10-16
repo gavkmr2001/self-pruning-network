@@ -31,6 +31,7 @@ uv sync                      # or: pip install -r requirements.txt
 ```bash
 uv run pytest -v                    # gradient checks + masking tests
 uv run python -m scripts.train_dense  # Part 2: dense MLP + Adam on digits (~10 s)
+uv run python -m scripts.self_prune   # Part 3: self-pruning to 90% sparsity (~2 s)
 ```
 
 ## Part 2 — dense baseline
@@ -48,4 +49,30 @@ hidden layers, Xavier for the logit layer), Adam lr 1e-3, batch 64, 40 epochs, s
 
 Learning curve and raw per-epoch numbers: `results/part2_dense/`.
 
+## Part 3 — self-pruning run
 
+Same model, data and optimizer as Part 2. While training, the network removes its own
+connections: dense warm-up for 5 epochs, then one mask update per epoch following a cubic
+sparsity ramp to 90% at epoch 30, then 10 epochs of fine-tuning with a fixed mask.
+
+* **Importance criterion:** saliency `S = ½ · E[g²] · w²` — second-order Taylor estimate of
+  the loss increase from removing a weight, with the diagonal Fisher (EMA of squared
+  gradients w.r.t. the effective weight) standing in for the Hessian. Global ranking across
+  layers (scores are in loss units), with a 1% per-layer floor.
+* **Regrowth:** a cosine-decaying share (30% → 0) of each event's budget is re-grown from
+  previously pruned weights with the largest `|E[dL/dW_eff]|`.
+* **Honest masking:** pruned weights are exact zeros in storage and in the forward pass;
+  the optimizer holds them at 0 and gives revived weights fresh Adam state.
+
+| seed 0 | dense (Part 2) | self-pruned |
+|---|---|---|
+| active weights | 25,856 | 2,586 (sparsity 0.9000) |
+| test accuracy | 0.9861 | 0.9666 |
+| test loss | 0.0505 | 0.0784 |
+| final val accuracy / loss | 0.9583 / 0.167 | 0.9694 / 0.112 |
+
+Per-layer density after pruning: 13.9% (64→128), 6.0% (128→128), 36.7% (128→10).
+These are single-seed numbers; Part 4 reports means and variance over seeds.
+
+Outputs in `results/part3_self_prune/`: `summary.json` (config, per-epoch history, every
+pruning event), `learning_curve.png`, `schedule.png`, `model.npz` (weights + masks).

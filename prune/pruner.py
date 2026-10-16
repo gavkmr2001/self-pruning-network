@@ -16,6 +16,14 @@ One mask-update event at step t (target sparsity s_t, N prunable weights):
      the same event, which is a no-op that wastes the regrowth budget.)
   5. Active count is now exactly target_active.
 
+  Early in the schedule the regrowth budget (f_t · target_active) exceeds the
+  pool of pruned weights, so the whole pool is re-grown and the event in effect
+  re-selects the full pruned set from current scores instead of locking in
+  decisions made on a barely-trained network. We measured the alternative
+  (budget capped at f_t · |pruned pool|) on the validation set, 5 seeds: no
+  better at 90% and slightly worse at 97% sparsity, so we keep the RigL-style
+  budget relative to the active count.
+
 Ranking scope:
   * "global": one ranking across all layers (meaningful for scores in units of
     loss, like saliency);

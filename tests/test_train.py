@@ -80,3 +80,22 @@ def test_evaluate_matches_manual_accuracy():
     _, acc = evaluate(model, data.val, batch_size=100)    # batching must not change the result
     pred = model(Tensor(data.val.X)).data.argmax(axis=1)
     assert acc == (pred == data.val.y).mean()
+
+
+def test_experiment_run_reports_real_sparsity_and_is_reproducible():
+    from train.experiment import RunConfig, run
+
+    cfg = RunConfig(sparsity=0.8, hidden=[32], epochs=6, prune_start_epoch=1, prune_end_epoch=4, lr=3e-3)
+    r1, r2 = run(cfg), run(cfg)
+    assert r1["test_acc"] == r2["test_acc"]
+    assert np.isclose(r1["achieved_sparsity"], round(0.8 * r1["prunable_weights"]) / r1["prunable_weights"])
+    # every pruned connection is an exact 0.0 in storage (could be more zeros, never fewer)
+    for layer in r1["layers"]:
+        assert layer["stored_exact_zeros"] >= layer["shape"][0] * layer["shape"][1] - layer["active"]
+
+
+def test_dense_config_has_no_pruner_and_matches_part2_setup():
+    from train.experiment import RunConfig, run
+
+    r = run(RunConfig(sparsity=0.0, hidden=[16], epochs=2))
+    assert r["events"] == [] and r["achieved_sparsity"] == 0.0
