@@ -32,6 +32,7 @@ uv sync                      # or: pip install -r requirements.txt
 uv run pytest -v                    # gradient checks + masking tests
 uv run python -m scripts.train_dense  # Part 2: dense MLP + Adam on digits (~10 s)
 uv run python -m scripts.self_prune   # Part 3: self-pruning to 90% sparsity (~2 s)
+uv run python -m scripts.benchmark_cost  # Part 4: MACs, memory, wall-clock of the pruned model
 ```
 
 ## Part 2 — dense baseline
@@ -76,3 +77,29 @@ These are single-seed numbers; Part 4 reports means and variance over seeds.
 
 Outputs in `results/part3_self_prune/`: `summary.json` (config, per-epoch history, every
 pruning event), `learning_curve.png`, `schedule.png`, `model.npz` (weights + masks).
+
+## Part 4 — does the pruned model actually cost less?
+
+`scripts/benchmark_cost.py` loads the Part 3 model and runs it through a sparse forward
+path we wrote (`prune/sparse.py`: CSR storage of the surviving weights, gather–multiply–
+segment-sum kernel). The dense-times-mask forward used during training is **not** counted
+as a speed-up — it performs every multiplication of the dense model.
+
+| per sample | dense | sparse (CSR) | compacted dense |
+|---|---|---|---|
+| multiply-accumulates | 25,856 | **2,586 (10.0× fewer)** | 17,443 (1.48× fewer) |
+| weight memory | 209 KB | **35 KB (5.9× less)** | 141 KB |
+| outputs vs dense model | — | identical (max error 7e-15) | identical |
+
+**Wall-clock, honestly:** on this machine (single-threaded NumPy) our CSR kernel is
+**2.7–32× *slower*** than NumPy's dense BLAS matmul, even though it does 10× fewer
+multiply-adds. Its time does scale linearly with the number of surviving weights
+(R² = 0.99 across densities 2–100%), so the work really shrinks — but irregular gathers
+plus an intermediate array cost far more per operation than cache-blocked, vectorised BLAS
+on a 64-128-128-10 model. The real wall-clock gain we can show comes from **compaction**:
+unstructured pruning disconnected 54 of 256 hidden units; removing them is an exact rewrite
+to smaller dense matrices, **1.05–1.35× faster** than the original dense model.
+See DESIGN.md for what it takes to turn unstructured sparsity into speed in production.
+
+Raw numbers and machine info: `results/part4_cost/cost.json`; plot: `results/part4_cost/cost.png`.
+Timings are machine-dependent; MAC and byte counts are exact.
