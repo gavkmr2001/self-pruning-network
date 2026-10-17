@@ -33,6 +33,7 @@ uv run pytest -v                    # gradient checks + masking tests
 uv run python -m scripts.train_dense  # Part 2: dense MLP + Adam on digits (~10 s)
 uv run python -m scripts.self_prune   # Part 3: self-pruning to 90% sparsity (~2 s)
 uv run python -m scripts.benchmark_cost  # Part 4: MACs, memory, wall-clock of the pruned model
+uv run python -m scripts.pareto_sweep    # Part 4: 250-run Pareto sweep + paired statistics (~2-3 min)
 ```
 
 ## Part 2 — dense baseline
@@ -103,3 +104,73 @@ See DESIGN.md for what it takes to turn unstructured sparsity into speed in prod
 
 Raw numbers and machine info: `results/part4_cost/cost.json`; plot: `results/part4_cost/cost.png`.
 Timings are machine-dependent; MAC and byte counts are exact.
+
+## Part 4 — Pareto curve and baseline comparison
+
+`scripts/pareto_sweep.py` trains 4 methods × 6 sparsity levels × 10 seeds (+ 10 dense runs)
+with the exact Part 3 code, changing only the criterion/scope/regrowth and target sparsity.
+Seeds change initialisation and batch order; the data split is fixed. Methods:
+
+* `magnitude-global` — |w|, one ranking across layers (the **stronger** magnitude baseline)
+* `magnitude-layer` — |w|, same sparsity in every layer (classic Han et al. style)
+* `saliency-global` — ½·E[g²]·w², global (isolates the criterion)
+* `saliency-global+regrow` — the full Part 3 method
+
+![Pareto curve](results/part4_pareto/pareto.png)
+
+Mean test accuracy over 10 seeds (std in `results/part4_pareto/summary.csv`):
+
+| sparsity | magnitude-layer | magnitude-global | saliency-global | saliency+regrow |
+|---|---|---|---|---|
+| 0% (dense) | 0.9811 | 0.9811 | 0.9811 | 0.9811 |
+| 50% | 0.9811 | 0.9819 | 0.9811 | 0.9808 |
+| 75% | 0.9802 | 0.9816 | 0.9805 | 0.9813 |
+| 90% | 0.9719 | 0.9733 | 0.9716 | 0.9733 |
+| 95% | 0.9543 | 0.9624 | 0.9694 | 0.9677 |
+| 97% | 0.9164 | 0.9468 | 0.9574 | 0.9610 |
+| 98% | 0.8552 | 0.9223 | 0.9437 | 0.9499 |
+
+### Is saliency actually better than magnitude? (variance across seeds)
+
+Paired by seed (same init and batch order for both methods), exact sign-flip permutation
+test, bootstrap 95% CI, Holm correction across the six sparsity levels. With 10 seeds the
+smallest attainable Holm-corrected p is 0.012. Full tables: `results/part4_pareto/comparisons.md`.
+
+**Analysis plan fixed before the sweep:** primary = saliency-global vs magnitude-global,
+test accuracy, at 95% sparsity. (Disclosure: an earlier 3-seed exploratory run at 90%/97%
+had been looked at while developing Part 3.)
+
+| saliency vs magnitude (global) | Δ accuracy [95% CI] | seeds better | Holm p | Δ test loss | seeds better | Holm p |
+|---|---|---|---|---|---|---|
+| 90% | −0.17 pts [−0.78, +0.39] | 5/10 | 1.00 | −0.005 | 7/10 | 0.41 |
+| **95% (primary)** | **+0.70 pts [+0.19, +1.11]** | 8/10 | **0.16** | −0.034 | 10/10 | 0.012 |
+| 97% | +1.06 pts [+0.50, +1.62] | 8/10 | 0.06 | −0.071 | 10/10 | 0.012 |
+| 98% | +2.14 pts [+1.20, +3.01] | 9/10 | 0.035 | −0.137 | 10/10 | 0.012 |
+
+Reading it honestly:
+
+* **Up to 90% sparsity there is no measurable difference** — `digits` with this MLP is easy
+  enough that any reasonable criterion works.
+* **The pre-registered primary test is not significant after correction** (+0.70 pts,
+  uncorrected p = 0.039, Holm p = 0.16). We do not claim an accuracy win at 95%.
+* **In test loss, saliency is better on every seed at 95%, 97% and 98%** (Holm p = 0.012,
+  the floor for 10 seeds), and the accuracy gap grows with sparsity, becoming significant at
+  98% (+2.14 pts, Holm p = 0.035).
+* **Regrowth** gives no statistically significant improvement over saliency alone at any
+  level (best: +0.61 pts at 98%, Holm p = 0.91). We keep it as a feature, not a claim.
+* **Global beats layer-wise magnitude** by up to 6.7 pts at 98%: uniform per-layer sparsity
+  starves the 1,280-weight output layer.
+
+### Falsifiable claim
+
+> **At 98% sparsity (517 of 25,856 weights kept), saliency pruning (global, no regrowth)
+> reaches 94.37% mean test accuracy versus 92.23% for global magnitude pruning, a paired
+> difference of +2.14 points (95% CI [+1.20, +3.01]) over 10 seeds, better on 9/10 seeds,
+> Holm-corrected p = 0.035; and at 95–98% sparsity its test loss is lower on all 10 seeds.**
+
+It is falsified if re-running `uv run python -m scripts.pareto_sweep` (or adding seeds)
+yields a CI for the 98% accuracy difference that includes 0, or any seed at 95–98% where
+magnitude has the lower test loss. Raw per-run numbers: `results/part4_pareto/runs.csv`.
+
+**Limitations:** one small dataset (359 test images: 1 image = 0.28 pts), a fixed data split
+(seed variance only), one architecture, and CPU-only cost measurements.
