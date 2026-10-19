@@ -8,33 +8,60 @@ least important connections *during* training under a hard sparsity budget.
 > any autodiff / pruning / NN library. **scikit-learn is used only to load a standard
 > dataset** — never for models, training, or gradients.
 
+## Results at a glance
+
+* **Part 1:** reverse-mode autodiff with broadcasting; every op passes finite-difference
+  gradient checks; masked weights get an exact-zero gradient, and a mask-aware Adam with
+  per-element step counts trains a revived weight exactly like a fresh one (tested to 1e-12).
+* **Part 2:** 64-128-128-10 MLP, own Adam, `digits`: 98.6% test accuracy (seed 0), no NaNs.
+* **Part 3:** the network prunes itself to **90.00% sparsity** (2,586 of 25,856 weights) with a
+  derived saliency criterion ½·E[g²]·w², a cubic schedule and gradient-based regrowth.
+* **Part 4:** 10× fewer multiply-adds and 5.9× less weight memory, but **our NumPy sparse
+  kernel is slower than dense BLAS at this size** (measured, reported); exact compaction of
+  disconnected units gives a real 1.05–1.35× speed-up. Across 10 seeds, saliency matches
+  magnitude up to 90% sparsity and beats it at 98% (+2.14 pts, Holm p = 0.035).
+
+Design reasoning (criterion derivation, masked gradients, engine bottlenecks, serving at
+scale): **[DESIGN.md](DESIGN.md)**.
+
 ## Layout
 
-| Folder    | Contents                                                        |
-|-----------|-----------------------------------------------------------------|
-| `engine/` | `Tensor`, differentiable ops, backward pass, gradient checking  |
-| `nn/`     | Parameters (with masks), layers, MLP, optimizers                |
-| `prune/`  | Importance criteria, sparsity schedule, pruner, sparse inference |
-| `train/`  | Data loading and the mini-batch training loop                   |
-| `tests/`  | Gradient-check suite and masked-weight correctness tests        |
-| `scripts/`| One entry point per part of the challenge                       |
-| `results/`| Committed raw numbers and plots                                 |
+| Folder    | Contents                                                                    |
+|-----------|-----------------------------------------------------------------------------|
+| `engine/` | `Tensor`, differentiable ops, backward pass, fused softmax-CE, gradient checker |
+| `nn/`     | `Parameter` with masks, layers, MLP, mask-aware SGD-momentum and Adam        |
+| `prune/`  | Importance criteria, cubic schedule, pruner with regrowth, CSR sparse inference |
+| `train/`  | Data loading, training loop, shared experiment runner, plotting, statistics  |
+| `tests/`  | Gradient checks, masked-weight/optimizer correctness, pruner, sparse, stats  |
+| `scripts/`| One entry point per part of the challenge                                    |
+| `results/`| Committed raw numbers and plots                                              |
 
 ## Install
 
+Python ≥ 3.10. With [uv](https://docs.astral.sh/uv/) (versions pinned in `uv.lock`):
+
 ```bash
-uv sync                      # or: pip install -r requirements.txt
+uv sync
 ```
+
+or with pip: `python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt`
+(then drop the `uv run` prefix below).
 
 ## Commands
 
 ```bash
-uv run pytest -v                    # gradient checks + masking tests
-uv run python -m scripts.train_dense  # Part 2: dense MLP + Adam on digits (~10 s)
-uv run python -m scripts.self_prune   # Part 3: self-pruning to 90% sparsity (~2 s)
+uv run pytest -v                         # Part 1: gradient checks + masked-weight tests (~2 s)
+uv run python -m scripts.train_dense     # Part 2: dense MLP + Adam on digits (~10 s)
+uv run python -m scripts.self_prune      # Part 3: self-pruning run to 90% sparsity (~2 s)
 uv run python -m scripts.benchmark_cost  # Part 4: MACs, memory, wall-clock of the pruned model
 uv run python -m scripts.pareto_sweep    # Part 4: 250-run Pareto sweep + paired statistics (~2-3 min)
+uv run python -m scripts.profile_engine  # DESIGN.md §3: where training time goes
 ```
+
+The Part 4 sweep resumes from `results/part4_pareto/runs.csv`; delete that folder to
+retrain all 250 runs from scratch. All randomness is seeded; training results reproduce
+bit-for-bit on the same platform (BLAS differences can change the last digits elsewhere).
+Wall-clock timings are machine-dependent; MAC/byte counts are exact.
 
 ## Part 2 — dense baseline
 
